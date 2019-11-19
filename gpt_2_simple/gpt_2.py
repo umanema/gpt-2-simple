@@ -21,9 +21,9 @@ try:
 except:
     pass
 
-from gpt_2_simple.src import model, sample, encoder, memory_saving_gradients
-from gpt_2_simple.src.load_dataset import load_dataset, Sampler
-from gpt_2_simple.src.accumulate import AccumulatingOptimizer
+from gpt_2_simple.gpt_2_simple.src import model, sample, encoder, memory_saving_gradients
+from gpt_2_simple.gpt_2_simple.src.load_dataset import load_dataset, Sampler
+from gpt_2_simple.gpt_2_simple.src.accumulate import AccumulatingOptimizer
 
 
 def download_file_with_progress(url_base, sub_dir, model_name, file_name):
