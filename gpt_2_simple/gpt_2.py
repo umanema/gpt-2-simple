@@ -14,6 +14,8 @@ import time
 from datetime import datetime
 import csv
 import argparse
+from sys import exit
+import codecs
 
 # if in Google Colaboratory
 try:
@@ -25,6 +27,7 @@ from gpt_2_simple.gpt_2_simple.src import model, sample, encoder, memory_saving_
 from gpt_2_simple.gpt_2_simple.src.load_dataset import load_dataset, Sampler
 from gpt_2_simple.gpt_2_simple.src.accumulate import AccumulatingOptimizer
 
+tf.compat.v1.disable_eager_execution()
 
 def download_file_with_progress(url_base, sub_dir, model_name, file_name):
     """General utility for incrementally downloading files from the internet
@@ -37,10 +40,10 @@ def download_file_with_progress(url_base, sub_dir, model_name, file_name):
     file_name : str
         name of file to get e.g. "hparams.json"
     sub_dir: str
-        subdirectory inside which to get and copy locally eg. "models/124M" 
+        subdirectory inside which to get and copy locally eg. "models/124M"
         no trailing slash
     url_base : str
-        Start of URL location specifying server and any base directories no 
+        Start of URL location specifying server and any base directories no
         trailing slash
         e.g. "https://storage.googleapis.com/gpt-2"
     """
@@ -55,7 +58,7 @@ def download_file_with_progress(url_base, sub_dir, model_name, file_name):
             for chunk in r.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
                 f.write(chunk)
                 pbar.update(DOWNLOAD_CHUNK_SIZE)
-   
+
 
 def download_gpt2(model_dir='models', model_name='124M'):
     """Downloads the GPT-2 model into the current directory
@@ -67,8 +70,8 @@ def download_gpt2(model_dir='models', model_name='124M'):
         parent directory of model to download
 
     model_name : str
-        name of the GPT-2 model to download. 
-        As of 22 May 2019 one of "124M" or "355M" but may later include other 
+        name of the GPT-2 model to download.
+        As of 22 May 2019 one of "124M" or "355M" but may later include other
         model sizes
 
     Adapted from https://github.com/openai/gpt-2/blob/master/download_model.py
@@ -83,7 +86,7 @@ def download_gpt2(model_dir='models', model_name='124M'):
     for file_name in ['checkpoint', 'encoder.json', 'hparams.json',
                       'model.ckpt.data-00000-of-00001', 'model.ckpt.index',
                       'model.ckpt.meta', 'vocab.bpe']:
-        download_file_with_progress(url_base="https://storage.googleapis.com/gpt-2",
+        download_file_with_progress(url_base="https://openaipublic.blob.core.windows.net/gpt-2",
                                     sub_dir=sub_dir,
                                     model_name=model_name,
                                     file_name=file_name)
@@ -102,7 +105,7 @@ def start_tf_sess(threads=-1, server=None):
 
     if server is not None:
         return tf.compat.v1.Session(target=server.target, config=config)
-    
+
     return tf.compat.v1.Session(config=config)
 
 
@@ -142,14 +145,15 @@ def finetune(sess,
              use_memory_saving_gradients=False,
              only_train_transformer_layers=False,
              optimizer='adam',
-             overwrite=False):
+             overwrite=False,
+             reuse=False):
     """Finetunes the model on the given dataset.
 
     Adapted from https://github.com/nshepperd/gpt-2/blob/finetuning/train.py.
     See that file for parameter definitions.
     """
 
-    assert model_name not in ['774M', '1558M'] or multi_gpu, "Currently, a modern single GPU cannot finetune the 774M GPT-2 model or larger."
+    # assert model_name not in ['774M', '1558M'] or multi_gpu, "Currently, a modern single GPU cannot finetune the 774M GPT-2 model or larger."
 
     SAMPLE_DIR = 'samples'
 
@@ -181,9 +185,10 @@ def finetune(sess,
             "Can't get samples longer than window size: %s" % hparams.n_ctx)
 
     if model_name not in ['117M', '124M']:
-        use_memory_saving_gradients = True
-        only_train_transformer_layers = True
-        accumulate_gradients = 1
+        print('For larger models, the recommended finetune() parameters are:')
+        print('\tuse_memory_saving_gradients = True')
+        print('\tonly_train_transformer_layers = True')
+        print('\taccumulate_gradients = 1\n')
 
     context = tf.compat.v1.placeholder(tf.int32, [batch_size, None])
     gpus = []
@@ -191,7 +196,7 @@ def finetune(sess,
     if multi_gpu:
         gpus = get_available_gpus()
 
-    output = model.model(hparams=hparams, X=context, gpus=gpus)
+    output = model.model(hparams=hparams, X=context, gpus=gpus, reuse=reuse)
     loss = tf.reduce_mean(
         input_tensor=tf.nn.sparse_softmax_cross_entropy_with_logits(
             labels=context[:, 1:], logits=output['logits'][:, :-1]))
@@ -211,6 +216,9 @@ def finetune(sess,
         opt = tf.compat.v1.train.AdamOptimizer(learning_rate=learning_rate)
     elif optimizer == 'sgd':
         opt = tf.compat.v1.train.GradientDescentOptimizer(learning_rate=learning_rate)
+
+    if tf.__version__ >= '2.0.0' and use_memory_saving_gradients:
+        exit("Memory saving gradients are not implemented for Tensorflow 2 yet.")
 
     if accumulate_gradients > 1:
         if use_memory_saving_gradients:
@@ -296,9 +304,9 @@ def finetune(sess,
                 index += 1
         print(text)
         maketree(os.path.join(SAMPLE_DIR, run_name))
-        with open(
+        with codecs.open(
                 os.path.join(SAMPLE_DIR, run_name,
-                             'samples-{}').format(counter), 'w') as fp:
+                             'samples-{}').format(counter), 'w', 'utf8') as fp:
             fp.write('\n'.join(all_text))
 
     def sample_batch():
@@ -315,7 +323,7 @@ def finetune(sess,
 
     if steps:
         steps = int(steps)
-    
+
     try:
         while True:
             if steps > 0 and counter == (counter_base + steps):
@@ -358,11 +366,13 @@ def finetune(sess,
 
 
 def load_gpt2(sess,
+              checkpoint='latest',
               run_name="run1",
               checkpoint_dir="checkpoint",
               model_name=None,
               model_dir='models',
-              multi_gpu=False):
+              multi_gpu=False,
+              reuse=False):
     """Loads the model checkpoint or existing model into a TensorFlow session
     for repeated predictions.
     """
@@ -382,9 +392,13 @@ def load_gpt2(sess,
     if multi_gpu:
         gpus = get_available_gpus()
 
-    output = model.model(hparams=hparams, X=context, gpus=gpus)
+    output = model.model(hparams=hparams, X=context, gpus=gpus, reuse=reuse)
 
-    ckpt = tf.train.latest_checkpoint(checkpoint_path)
+    if checkpoint=='latest':
+        ckpt = tf.train.latest_checkpoint(checkpoint_path)
+    else:
+        ckpt = os.path.join(checkpoint_path,checkpoint)
+
     saver = tf.compat.v1.train.Saver(allow_empty=True)
     sess.run(tf.compat.v1.global_variables_initializer())
 
@@ -448,7 +462,7 @@ def generate(sess,
 
     output = sample.sample_sequence(
         hparams=hparams,
-        length=min(length, 1023 - (len(context_tokens) if prefix else 0)),
+        length=min(length, length - (len(context_tokens) if prefix else 0)),
         start_token=enc.encoder['<|endoftext|>'] if not prefix else None,
         context=context if prefix else None,
         batch_size=batch_size,
@@ -456,7 +470,7 @@ def generate(sess,
     )[:, 1:]
 
     if destination_path:
-        f = open(destination_path, 'w')
+        f = codecs.open(destination_path, 'w', 'utf-8')
     generated = 0
     gen_texts = []
     while generated < nsamples:
@@ -567,7 +581,7 @@ def copy_checkpoint_to_gdrive(run_name='run1', copy_folder=False):
     checkpoint_folder = os.path.join('checkpoint', run_name)
 
     if copy_folder:
-        shutil.copytree(checkpoint_folder, "/content/drive/My Drive/" + checkpoint_folder)
+        shutil.copytree(checkpoint_folder, "/content/drive/MyDrive/" + checkpoint_folder)
     else:
         file_path = get_tarfile_name(checkpoint_folder)
 
@@ -575,7 +589,7 @@ def copy_checkpoint_to_gdrive(run_name='run1', copy_folder=False):
         with tarfile.open(file_path, 'w') as tar:
             tar.add(checkpoint_folder)
 
-        shutil.copyfile(file_path, "/content/drive/My Drive/" + file_path)
+        shutil.copyfile(file_path, "/content/drive/MyDrive/" + file_path)
 
 
 def copy_checkpoint_from_gdrive(run_name='run1', copy_folder=False):
@@ -585,11 +599,11 @@ def copy_checkpoint_from_gdrive(run_name='run1', copy_folder=False):
     checkpoint_folder = os.path.join('checkpoint', run_name)
 
     if copy_folder:
-        shutil.copytree("/content/drive/My Drive/" + checkpoint_folder, checkpoint_folder)
+        shutil.copytree("/content/drive/MyDrive/" + checkpoint_folder, checkpoint_folder)
     else:
         file_path = get_tarfile_name(checkpoint_folder)
 
-        shutil.copyfile("/content/drive/My Drive/" + file_path, file_path)
+        shutil.copyfile("/content/drive/MyDrive/" + file_path, file_path)
 
         with tarfile.open(file_path, 'r') as tar:
             tar.extractall()
@@ -599,14 +613,14 @@ def copy_file_to_gdrive(file_path):
     """Copies a file to a mounted Google Drive."""
     is_mounted()
 
-    shutil.copyfile(file_path, "/content/drive/My Drive/" + file_path)
+    shutil.copyfile(file_path, "/content/drive/MyDrive/" + file_path)
 
 
 def copy_file_from_gdrive(file_path):
     """Copies a file from a mounted Google Drive."""
     is_mounted()
 
-    shutil.copyfile("/content/drive/My Drive/" + file_path, file_path)
+    shutil.copyfile("/content/drive/MyDrive/" + file_path, file_path)
 
 
 def is_gpt2_downloaded(model_dir='models', model_name='124M'):
@@ -661,7 +675,7 @@ def cmd():
     )
 
     # Explicit arguments
-    
+
     parser.add_argument(
         '--mode', help='Mode for using the CLI (either "finetune" or "generate") [Required]', nargs='?')
     parser.add_argument(

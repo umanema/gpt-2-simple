@@ -6,4 +6,4 @@ shakespeare.txt
 dist/
 gpt_2_simple.egg-info/
 build/
-models/
+.DS_Store
